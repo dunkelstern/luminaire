@@ -101,9 +101,9 @@ void led_identify(homekit_value_t _value) {
 #endif
 
 strand_t STRANDS[] = { // Avoid using any of the strapping pins on the ESP32
-    {.rmtChannel = 1, .gpioNum = 12, .ledType = LED_WS2813_V2, .brightLimit = 32, .numPixels = 8,
+    {.rmtChannel = 1, .gpioNum = 12, .ledType = LED_SK6812W_V1, .brightLimit = 255, .numPixels = 8,
         .pixels = NULL, ._stateVars = NULL},
-    {.rmtChannel = 0, .gpioNum = 13, .ledType = LED_WS2813_V2, .brightLimit = 32, .numPixels = 16,
+    {.rmtChannel = 0, .gpioNum = 13, .ledType = LED_SK6812W_V1, .brightLimit = 255, .numPixels = 16,
         .pixels = NULL, ._stateVars = NULL},
 };
 int STRANDCNT = sizeof(STRANDS)/sizeof(STRANDS[0]);
@@ -375,6 +375,10 @@ void app_main(void) {
         printf("Init FAILURE: halting\n");
         while (true) {};
     }
+
+    update_ambilight();
+    update_floodlight();
+
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
