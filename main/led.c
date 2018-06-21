@@ -135,6 +135,10 @@ typedef struct _lightState {
 #include "math.h"
 #define DEG_TO_RAD(X) (M_PI*(X)/180)
 
+float exponential_in(float percentage) {
+    return pow(2, 10 * (percentage - 1.0));
+}
+
 pixelColor_t calculate_color(LightState state) {
     int r, g, b, w;
     float cos_h, cos_1047_h;
@@ -149,26 +153,26 @@ pixelColor_t calculate_color(LightState state) {
     if (state.hue < 2.09439) {
         cos_h = cos(state.hue);
         cos_1047_h = cos(1.047196667 - state.hue);
-        r = state.saturation * 255 * state.brightness / 3 * (1 + cos_h / cos_1047_h);
-        g = state.saturation * 255 * state.brightness / 3 * (1 + (1 - cos_h / cos_1047_h));
+        r = state.saturation * 255.0 * state.brightness / 3.0 * (1.0 + cos_h / cos_1047_h);
+        g = state.saturation * 255.0 * state.brightness / 3.0 * (1.0 + (1.0 - cos_h / cos_1047_h));
         b = 0;
-        w = 255 * (1 - state.saturation) * state.brightness;
+        w = 255.0 * exponential_in(1.0 - state.saturation) * state.brightness;
     } else if (state.hue < 4.188787) {
         state.hue = state.hue - 2.09439;
         cos_h = cos(state.hue);
         cos_1047_h = cos(1.047196667 - state.hue);
-        g = state.saturation * 255 * state.brightness / 3 * (1 + cos_h / cos_1047_h);
-        b = state.saturation * 255 * state.brightness / 3 * (1 + (1 - cos_h / cos_1047_h));
+        g = state.saturation * 255.0 * state.brightness / 3.0 * (1.0 + cos_h / cos_1047_h);
+        b = state.saturation * 255.0 * state.brightness / 3.0 * (1.0 + (1.0 - cos_h / cos_1047_h));
         r = 0;
-        w = 255 * (1 - state.saturation) * state.brightness;
+        w = 255 * exponential_in(1.0 - state.saturation) * state.brightness;
     } else {
         state.hue = state.hue - 4.188787;
         cos_h = cos(state.hue);
         cos_1047_h = cos(1.047196667 - state.hue);
-        b = state.saturation * 255 * state.brightness / 3 * (1 + cos_h / cos_1047_h);
-        r = state.saturation * 255 * state.brightness / 3 * (1 + (1 - cos_h / cos_1047_h));
+        b = state.saturation * 255.0 * state.brightness / 3.0 * (1.0 + cos_h / cos_1047_h);
+        r = state.saturation * 255.0 * state.brightness / 3.0 * (1.0 + (1.0 - cos_h / cos_1047_h));
         g = 0;
-        w = 255 * (1 - state.saturation) * state.brightness;
+        w = 255.0 * exponential_in(1.0 - state.saturation) * state.brightness;
     }
 
     return pixelFromRGBW(r, g, b, w);
