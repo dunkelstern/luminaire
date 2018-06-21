@@ -141,6 +141,7 @@ pixelColor_t calculate_color(LightState state) {
 
     state.hue = fmod(state.hue, 360.0); // cycle H around to 0-360 degrees
     state.hue = 3.14159 * state.hue / (float)180.0; // Convert to radians.
+    state.saturation /= 100.0;
     state.saturation = state.saturation > 0 ? (state.saturation < 1 ? state.saturation : 1) : 0; // clamp S and I to interval [0,1]
     state.brightness /= 100.0;
     state.brightness = state.brightness > 0 ? (state.brightness < 1 ? state.brightness : 1) : 0;
