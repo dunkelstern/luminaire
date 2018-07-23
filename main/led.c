@@ -1,3 +1,6 @@
+#define ENABLE_MQTT
+#undef ENABLE_HOMEKIT
+
 #include <stdio.h>
 #include <esp_wifi.h>
 #include <esp_event_loop.h>
@@ -7,14 +10,28 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "../wifi.h"
+#include "esp32_digital_led_lib.h"
+
+#ifdef ENABLE_HOMEKIT
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
-#include "../wifi.h"
+#endif /* ENABLE_HOMEKIT */
 
-#include "esp32_digital_led_lib.h"
+#ifdef ENABLE_MQTT
 #include "mqtt_client.h"
-
 static const char *TAG = "MQTT_CLIENT";
+#endif /* ENABLE_MQTT */
+
+#define max(a,b) \
+   ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+     _a > _b ? _a : _b; })
+
+#define min(a,b) \
+   ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+     _a < _b ? _a : _b; })
 
 void on_wifi_ready();
 
@@ -59,6 +76,7 @@ static void wifi_init() {
 /*
  * Onboard LED for identify
  */
+#ifdef ENABLE_HOMEKIT
 
 const int led_gpio = 2;
 bool led_on = false;
@@ -93,9 +111,13 @@ void led_identify(homekit_value_t _value) {
     xTaskCreate(led_identify_task, "LED identify", 512, NULL, 2, NULL);
 }
 
+#endif /* ENABLE_HOMEKIT */
+
 /*
  * MQTT setup
  */
+
+#ifdef ENABLE_MQTT
 
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event);
 
@@ -111,19 +133,25 @@ const esp_mqtt_client_config_t mqtt_cfg = {
 };
 
 typedef enum _MQTT_Message{
-    MQTT_MSG_AMBILIGHT_RGB         = 0,
-    MQTT_MSG_AMBILIGHT_BRIGHTNESS  = 1,
-    MQTT_MSG_AMBILIGHT_SWITCH      = 2,
-    MQTT_MSG_FLOODLIGHT_RGB        = 3,
-    MQTT_MSG_FLOODLIGHT_BRIGHTNESS = 4,
-    MQTT_MSG_FLOODLIGHT_SWITCH     = 5
+    MQTT_MSG_AMBILIGHT_HUE         = 0,
+    MQTT_MSG_AMBILIGHT_SATURATION  = 1,
+    MQTT_MSG_AMBILIGHT_BRIGHTNESS  = 2,
+    MQTT_MSG_AMBILIGHT_XY          = 3,
+    MQTT_MSG_AMBILIGHT_SWITCH      = 4,
+    MQTT_MSG_FLOODLIGHT_HUE        = 5,
+    MQTT_MSG_FLOODLIGHT_SATURATION = 6,
+    MQTT_MSG_FLOODLIGHT_BRIGHTNESS = 7,
+    MQTT_MSG_FLOODLIGHT_XY         = 8,
+    MQTT_MSG_FLOODLIGHT_SWITCH     = 9
 } MQTT_Message;
 
-#define NUM_MQTT_MSG 6
+#define NUM_MQTT_MSG 10
 
 esp_mqtt_client_handle_t mqtt_client;
 
 static void mqtt_republish(esp_mqtt_client_handle_t client, MQTT_Message typ);
+
+#endif /* ENABLE_MQTT */
 
 /*
  * LED Strip setup
@@ -165,21 +193,23 @@ typedef struct _lightState {
     float hue;
     float saturation;
     float brightness;
+    float x;
+    float y;
 } LightState;
 
 #include "math.h"
-#define DEG_TO_RAD(X) (M_PI*(X)/180)
+#define DEG_TO_RAD(X) (M_PI*(X)/180.0)
 
-float exponential_in(float percentage) {
+double exponential_in(double percentage) {
     return pow(2, 10 * (percentage - 1.0));
 }
 
-pixelColor_t calculate_color(LightState state) {
+static pixelColor_t hsb_to_rgbw(LightState state) {
     int r, g, b, w;
-    float cos_h, cos_1047_h;
+    double cos_h, cos_1047_h;
 
     state.hue = fmod(state.hue, 360.0); // cycle H around to 0-360 degrees
-    state.hue = 3.14159 * state.hue / (float)180.0; // Convert to radians.
+    state.hue = 3.14159 * state.hue / (double)180.0; // Convert to radians.
     state.saturation /= 100.0;
     state.saturation = state.saturation > 0 ? (state.saturation < 1 ? state.saturation : 1) : 0; // clamp S and I to interval [0,1]
     state.brightness /= 100.0;
@@ -210,15 +240,179 @@ pixelColor_t calculate_color(LightState state) {
         w = 255.0 * exponential_in(1.0 - state.saturation) * state.brightness;
     }
 
-    printf("r = %d, g = %d, b = %d, w = %d\n", r,g,b,w);
     return pixelFromRGBW(r, g, b, w);
+}
+
+# if 0
+static pixelColor_t hsv_to_rgb(LightState state) {
+    int r, g, b;
+    double cos_h, cos_1047_h;
+
+    state.hue = fmod(state.hue, 360.0); // cycle H around to 0-360 degrees
+    state.hue = 3.14159 * state.hue / (double)180.0; // Convert to radians.
+    state.saturation /= 100.0;
+    state.saturation = state.saturation > 0 ? (state.saturation < 1 ? state.saturation : 1) : 0; // clamp S and I to interval [0,1]
+    state.brightness /= 100.0;
+    state.brightness = state.brightness > 0 ? (state.brightness < 1 ? state.brightness : 1) : 0;
+
+    if (state.hue < 2.09439) {
+        cos_h = cos(state.hue);
+        cos_1047_h = cos(1.047196667 - state.hue);
+        r = state.saturation * 255.0 * (1.0 + cos_h / cos_1047_h);
+        g = state.saturation * 255.0 * (1.0 + (1.0 - cos_h / cos_1047_h));
+        b = 0;
+    } else if (state.hue < 4.188787) {
+        state.hue = state.hue - 2.09439;
+        cos_h = cos(state.hue);
+        cos_1047_h = cos(1.047196667 - state.hue);
+        g = state.saturation * 255.0 * (1.0 + cos_h / cos_1047_h);
+        b = state.saturation * 255.0 * (1.0 + (1.0 - cos_h / cos_1047_h));
+        r = 0;
+    } else {
+        state.hue = state.hue - 4.188787;
+        cos_h = cos(state.hue);
+        cos_1047_h = cos(1.047196667 - state.hue);
+        b = state.saturation * 255.0 * (1.0 + cos_h / cos_1047_h);
+        r = state.saturation * 255.0 * (1.0 + (1.0 - cos_h / cos_1047_h));
+        g = 0;
+    }
+
+    return pixelFromRGB(r, g, b);
+}
+#endif
+
+static pixelColor_t xyb_to_rgb(float vX, float vY, float vB) {
+    double brightness = vB / 100.0;
+    if (brightness == 0) {
+        return pixelFromRGB(0, 0, 0);
+    }
+
+    double Y = brightness;
+
+    if (vY == 0) {
+        vY += 0.00000000001;
+    }
+
+    double X = (Y / vY) * vX;
+    double Z = (Y / vY) * (1.0 - vX - vY);
+
+    // Convert to RGB using Wide RGB D65 conversion.
+    double r = X * 1.656492 - Y * 0.354851 - Z * 0.255038;
+    double g = -X * 0.707196 + Y * 1.655397 + Z * 0.036152;
+    double b = X * 0.051713 - Y * 0.121364 + Z * 1.011530;
+
+    // Apply reverse gamma correction.
+    r = (r <= 0.0031308) ? (12.92 * r) : ((1.0 + 0.055) * pow(r, (1.0 / 2.4)) - 0.055); 
+    g = (g <= 0.0031308) ? (12.92 * g) : ((1.0 + 0.055) * pow(g, (1.0 / 2.4)) - 0.055); 
+    b = (b <= 0.0031308) ? (12.92 * b) : ((1.0 + 0.055) * pow(b, (1.0 / 2.4)) - 0.055); 
+
+    // Bring all negative components to zero.
+    r = max(0, r);
+    g = max(0, g);
+    b = max(0, b);
+
+    // If one component is greater than 1, weight components by that value.
+    double max_component = max(r, max(g, b));
+    if (max_component > 1.0) {
+        r /= max_component;
+        g /= max_component;
+        b /= max_component;
+    }
+
+    return pixelFromRGB(r * 255.0, g * 255.0, b * 255.0);
+}
+
+#if 0
+typedef struct _XYBColor {
+    float x;
+    float y;
+    float b;
+} XYBColor;
+
+static XYBColor rgb_to_xyb(pixelColor_t rgb) {
+    XYBColor xyb = {0};
+
+    if (rgb.r + rgb.b + rgb.b == 0) {
+        return xyb;
+    }
+    
+    double R = (double)rgb.r / 255.0;
+    double B = (double)rgb.b / 255.0;
+    double G = (double)rgb.g / 255.0;
+
+    // Gamma correction
+    R = (R > 0.04045) ? pow((R + 0.055) / (1.0 + 0.055), 2.4) : (R / 12.92);
+    G = (G > 0.04045) ? pow((G + 0.055) / (1.0 + 0.055), 2.4) : (G / 12.92);
+    B = (B > 0.04045) ? pow((B + 0.055) / (1.0 + 0.055), 2.4) : (B / 12.92);
+
+    // Wide RGB D65 conversion formula
+    double X = R * 0.664511 + G * 0.154324 + B * 0.162028;
+    double Y = R * 0.283881 + G * 0.668433 + B * 0.047685;
+    double Z = R * 0.000088 + G * 0.072310 + B * 0.986039;
+
+    // Convert XYZ to xy
+    xyb.x = round(X / (X + Y + Z) * 1000.0) / 1000.0;
+    xyb.y = round(Y / (X + Y + Z) * 1000.0) / 1000.0;
+
+    // Brightness
+    xyb.y = round((Y > 1.0) ? 1000.0 : Y * 1000.0) / 1000.0;
+
+    return xyb;
+}
+#endif
+
+typedef struct _HSVColor {
+    float h;
+    float s;
+    float v;
+} HSVColor;
+
+static HSVColor rgb_to_hsv(pixelColor_t color) {
+    double delta, m;
+    double h = 0, s, v;
+
+    m = min(min(color.r, color.g), color.b);
+    v = max(max(color.r, color.g), color.b);
+    delta = v - m;
+
+    if (v == 0.0) {
+        s = 0;
+    } else {
+        s = delta / v;
+    }
+
+    if (s == 0) {
+        h = 0.0;
+    } else {
+        if (color.r == v) {
+            h = (double)(color.g - color.b) / delta;
+        } else if (color.g == v) {
+            h = 2.0 + (double)(color.b - color.r) / delta;
+        } else if (color.b == v) {
+            h = 4.0 + (double)(color.r - color.g) / delta;
+        }
+
+        h *= 60.0;
+
+        if (h < 0.0) {
+            h = h + 360.0;
+        }
+    }
+
+    HSVColor hsv = {
+        .h = h,
+        .s = s,
+        .v = v / 255.0
+    };
+
+    return hsv;
 }
 
 void update_light(strand_t *strand, LightState state) {
     if (state.on == false) {
         digitalLeds_resetPixels(strand);
     } else {
-        pixelColor_t px = calculate_color(state);
+        pixelColor_t px = hsb_to_rgbw(state);
         for (uint16_t i = 0; i < strand->numPixels; i++) {
             strand->pixels[i] = px;
         }
@@ -234,7 +428,9 @@ LightState floodlight = {
     .on = true,
     .hue = 0,
     .saturation = 0,
-    .brightness = 100
+    .brightness = 100,
+    .x = 0,
+    .y = 0
 };
 
 void update_floodlight() {
@@ -247,6 +443,7 @@ void update_floodlight() {
     );
 }
 
+#ifdef ENABLE_HOMEKIT
 homekit_value_t get_floodlight_on() {
     return HOMEKIT_BOOL(floodlight.on);
 }
@@ -259,12 +456,13 @@ void set_floodlight_on(homekit_value_t value) {
 
 homekit_value_t get_floodlight_hue() {
     return HOMEKIT_FLOAT(floodlight.hue);
+    return HOMEKIT_FLOAT(floodlight.hue);
 }
 
 void set_floodlight_hue(homekit_value_t value) {
     floodlight.hue = value.float_value;
     update_floodlight();
-    mqtt_republish(mqtt_client, MQTT_MSG_FLOODLIGHT_RGB);
+    mqtt_republish(mqtt_client, MQTT_MSG_FLOODLIGHT_HUE);
 }
 
 homekit_value_t get_floodlight_saturation() {
@@ -274,7 +472,7 @@ homekit_value_t get_floodlight_saturation() {
 void set_floodlight_saturation(homekit_value_t value) {
     floodlight.saturation = value.float_value;
     update_floodlight();
-    mqtt_republish(mqtt_client, MQTT_MSG_FLOODLIGHT_RGB);
+    mqtt_republish(mqtt_client, MQTT_MSG_FLOODLIGHT_SATURATION);
 }
 
 homekit_value_t get_floodlight_brightness() {
@@ -288,6 +486,8 @@ void set_floodlight_brightness(homekit_value_t value) {
     mqtt_republish(mqtt_client, MQTT_MSG_FLOODLIGHT_BRIGHTNESS);
 }
 
+#endif /* ENABLE_HOMEKIT */
+
 /*
  * Ambilight
  */
@@ -296,7 +496,9 @@ LightState ambilight = {
     .on = true,
     .hue = 0,
     .saturation = 0,
-    .brightness = 100
+    .brightness = 100,
+    .x = 0,
+    .y = 0
 };
 
 void update_ambilight() {
@@ -309,6 +511,8 @@ void update_ambilight() {
     );
 
 }
+
+#ifdef ENABLE_HOMEKIT
 
 homekit_value_t get_ambilight_on() {
     return HOMEKIT_BOOL(ambilight.on);
@@ -327,7 +531,7 @@ homekit_value_t get_ambilight_hue() {
 void set_ambilight_hue(homekit_value_t value) {
     ambilight.hue = value.float_value;
     update_ambilight();
-    mqtt_republish(mqtt_client, MQTT_MSG_AMBILIGHT_RGB);
+    mqtt_republish(mqtt_client, MQTT_MSG_AMBILIGHT_HUE);
 }
 
 homekit_value_t get_ambilight_saturation() {
@@ -337,7 +541,7 @@ homekit_value_t get_ambilight_saturation() {
 void set_ambilight_saturation(homekit_value_t value) {
     ambilight.saturation = value.float_value;
     update_ambilight();
-    mqtt_republish(mqtt_client, MQTT_MSG_AMBILIGHT_RGB);
+    mqtt_republish(mqtt_client, MQTT_MSG_AMBILIGHT_SATURATION);
 }
 
 homekit_value_t get_ambilight_brightness() {
@@ -351,11 +555,13 @@ void set_ambilight_brightness(homekit_value_t value) {
     mqtt_republish(mqtt_client, MQTT_MSG_AMBILIGHT_BRIGHTNESS);
 }
 
+#endif /* ENABLE_HOMEKIT */
 
 /*
  * Accessory definition
  */
 
+#ifdef ENABLE_HOMEKIT
 homekit_accessory_t *accessories[] = {
     HOMEKIT_ACCESSORY(.id=1, .category=homekit_accessory_category_lightbulb, .services=(homekit_service_t*[]){
         HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics=(homekit_characteristic_t*[]){
@@ -425,26 +631,31 @@ homekit_server_config_t config = {
     .password = "123-11-456"
 };
 
+#endif /* ENABLE_HOMEKIT */
+
 /*
  * MQTT event handler
  */
 
-
-static char *get_rgb_string(LightState state) {
-    char *data;
-    pixelColor_t px = calculate_color(state);
-    asprintf(&data, "%d, %d, %d", px.r, px.g, px.b);
-    return data;
-}
+#ifdef ENABLE_MQTT
 
 static void mqtt_republish(esp_mqtt_client_handle_t client, MQTT_Message typ) {
     char *data = NULL;
     char *endpoint = NULL;
     switch (typ) {
-        case MQTT_MSG_AMBILIGHT_RGB:
-            data = get_rgb_string(ambilight);
-            endpoint = MQTT_ID "/ambilight/rgb/status";
+        case MQTT_MSG_AMBILIGHT_HUE:
+            asprintf(&data, "%d", (int)ambilight.hue);
+            endpoint = MQTT_ID "/ambilight/hue/status";
             break;
+        case MQTT_MSG_AMBILIGHT_SATURATION:
+            asprintf(&data, "%d", (int)ambilight.saturation);
+            endpoint = MQTT_ID "/ambilight/saturation/status";
+            break;
+        case MQTT_MSG_AMBILIGHT_XY: {
+            asprintf(&data, "%0.3f,%0.3f", ambilight.x, ambilight.y);
+            endpoint = MQTT_ID "/ambilight/xy/status";
+            break;
+        }
         case MQTT_MSG_AMBILIGHT_BRIGHTNESS:
             asprintf(&data, "%d", (int)ambilight.brightness);
             endpoint = MQTT_ID "/ambilight/brightness/status";
@@ -454,10 +665,19 @@ static void mqtt_republish(esp_mqtt_client_handle_t client, MQTT_Message typ) {
             endpoint = MQTT_ID "/ambilight/switch/status";
             break;
 
-        case MQTT_MSG_FLOODLIGHT_RGB:
-            data = get_rgb_string(floodlight);
-            endpoint = MQTT_ID "/floodlight/rgb/status";
+        case MQTT_MSG_FLOODLIGHT_HUE:
+            asprintf(&data, "%d", (int)floodlight.hue);
+            endpoint = MQTT_ID "/floodlight/hue/status";
             break;
+        case MQTT_MSG_FLOODLIGHT_SATURATION:
+            asprintf(&data, "%d", (int)floodlight.saturation);
+            endpoint = MQTT_ID "/floodlight/saturation/status";
+            break;        
+        case MQTT_MSG_FLOODLIGHT_XY: {
+            asprintf(&data, "%0.3f,%0.3f", floodlight.x, floodlight.y);
+            endpoint = MQTT_ID "/floodlight/xy/status";
+            break;
+        }
         case MQTT_MSG_FLOODLIGHT_BRIGHTNESS:
             asprintf(&data, "%d", (int)floodlight.brightness);
             endpoint = MQTT_ID "/floodlight/brightness/status";
@@ -474,15 +694,74 @@ static void mqtt_republish(esp_mqtt_client_handle_t client, MQTT_Message typ) {
     }
 }
 
-static void mqtt_update(char *topic, int topic_len, char *data, int data_len) {
+static void update_xy(LightState *state, char *xy) {
+    char *yptr = NULL;
+    float x = strtof(xy, &yptr);
+    float y = strtof(yptr + 1, NULL);
+
+    pixelColor_t rgb = xyb_to_rgb(x, y, state->brightness);
+    HSVColor hsv = rgb_to_hsv(rgb);
+
+    state->hue = hsv.h;
+    state->saturation = hsv.s * 100.0;
+    state->x = x;
+    state->y = y;
+}
+
+static void mqtt_update(esp_mqtt_client_handle_t client, char *topic, int topic_len, char *data, int data_len) {
+    char *converted_data;
+    asprintf(&converted_data, "%.*s", data_len, data);
+
     if (strncmp(topic, MQTT_ID "/ambilight/switch/set", topic_len) == 0) {
         ambilight.on = (strncasecmp(data, "ON", data_len) == 0);
         update_ambilight();
-    }
-    if (strncmp(topic, MQTT_ID "/floodlight/switch/set", topic_len) == 0) {
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_SWITCH);
+    } else if (strncmp(topic, MQTT_ID "/floodlight/switch/set", topic_len) == 0) {
         floodlight.on = (strncasecmp(data, "ON", data_len) == 0);
         update_floodlight();
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_SWITCH);
+    } else if (strncmp(topic, MQTT_ID "/floodlight/hue/set", topic_len) == 0) {
+        floodlight.hue = atof(converted_data);
+        update_floodlight();
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_HUE);
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_XY);
+    } else if (strncmp(topic, MQTT_ID "/floodlight/saturation/set", topic_len) == 0) {
+        floodlight.saturation = atof(converted_data);
+        update_floodlight();
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_SATURATION);
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_XY);
+    } else if (strncmp(topic, MQTT_ID "/floodlight/xy/set", topic_len) == 0) {
+        update_xy(&floodlight, converted_data);
+        update_floodlight();
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_XY);
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_HUE);
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_SATURATION);
+    } else if (strncmp(topic, MQTT_ID "/floodlight/brightness/set", topic_len) == 0) {
+        floodlight.brightness = atof(converted_data);
+        update_floodlight();
+        mqtt_republish(client, MQTT_MSG_FLOODLIGHT_BRIGHTNESS);
+    } else if (strncmp(topic, MQTT_ID "/ambilight/hue/set", topic_len) == 0) {
+        ambilight.hue = atof(converted_data);
+        update_ambilight();
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_HUE);
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_XY);
+    } else if (strncmp(topic, MQTT_ID "/ambilight/saturation/set", topic_len) == 0) {
+        ambilight.saturation = atof(converted_data);
+        update_ambilight();
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_SATURATION);
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_XY);
+    } else if (strncmp(topic, MQTT_ID "/ambilight/xy/set", topic_len) == 0) {
+        update_xy(&ambilight, converted_data);
+        update_ambilight();
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_XY);
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_HUE);
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_SATURATION);
+    } else if (strncmp(topic, MQTT_ID "/ambilight/brightness/set", topic_len) == 0) {
+        ambilight.brightness = atof(converted_data);
+        update_ambilight();
+        mqtt_republish(client, MQTT_MSG_AMBILIGHT_BRIGHTNESS);
     }
+    free(converted_data);
 }
 
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
@@ -492,15 +771,23 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-            msgs[MQTT_MSG_FLOODLIGHT_RGB] = esp_mqtt_client_subscribe(client, MQTT_ID "/floodlight/rgb/set", 1);
+            msgs[MQTT_MSG_FLOODLIGHT_HUE] = esp_mqtt_client_subscribe(client, MQTT_ID "/floodlight/hue/set", 1);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            msgs[MQTT_MSG_FLOODLIGHT_SATURATION] = esp_mqtt_client_subscribe(client, MQTT_ID "/floodlight/saturation/set", 1);
             vTaskDelay(100 / portTICK_PERIOD_MS);
             msgs[MQTT_MSG_FLOODLIGHT_BRIGHTNESS] = esp_mqtt_client_subscribe(client, MQTT_ID "/floodlight/brightness/set", 1);
             vTaskDelay(100 / portTICK_PERIOD_MS);
+            msgs[MQTT_MSG_FLOODLIGHT_XY] = esp_mqtt_client_subscribe(client, MQTT_ID "/floodlight/xy/set", 1);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
             msgs[MQTT_MSG_FLOODLIGHT_SWITCH] = esp_mqtt_client_subscribe(client, MQTT_ID "/floodlight/switch/set", 1);
             vTaskDelay(100 / portTICK_PERIOD_MS);
-            msgs[MQTT_MSG_AMBILIGHT_RGB] = esp_mqtt_client_subscribe(client, MQTT_ID "/ambilight/rgb/set", 1);
+            msgs[MQTT_MSG_AMBILIGHT_HUE] = esp_mqtt_client_subscribe(client, MQTT_ID "/ambilight/hue/set", 1);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            msgs[MQTT_MSG_AMBILIGHT_SATURATION] = esp_mqtt_client_subscribe(client, MQTT_ID "/ambilight/saturation/set", 1);
             vTaskDelay(100 / portTICK_PERIOD_MS);
             msgs[MQTT_MSG_AMBILIGHT_BRIGHTNESS] = esp_mqtt_client_subscribe(client, MQTT_ID "/ambilight/brightness/set", 1);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            msgs[MQTT_MSG_AMBILIGHT_XY] = esp_mqtt_client_subscribe(client, MQTT_ID "/ambilight/xy/set", 1);
             vTaskDelay(100 / portTICK_PERIOD_MS);
             msgs[MQTT_MSG_AMBILIGHT_SWITCH] = esp_mqtt_client_subscribe(client, MQTT_ID "/ambilight/switch/set", 1);
             vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -529,9 +816,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
             break;
         case MQTT_EVENT_DATA:
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-            printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
-            printf("DATA=%.*s\r\n", event->data_len, event->data);
-            mqtt_update(event->topic, event->topic_len, event->data, event->data_len);
+            mqtt_update(client, event->topic, event->topic_len, event->data, event->data_len);
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -540,15 +825,21 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
     return ESP_OK;
 }
 
+#endif /* ENABLE_MQTT */
+
 /*
  * APP Main
  */
 
 void on_wifi_ready() {
+#ifdef ENABLE_HOMEKIT
     homekit_server_init(&config);
+#endif /* ENABLE_HOMEKIT */
 
+#ifdef ENABLE_MQTT
     mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(mqtt_client);
+#endif /* ENABLE_MQTT */
 }
 
 void app_main(void) {
@@ -572,5 +863,7 @@ void app_main(void) {
     ESP_ERROR_CHECK( ret );
 
     wifi_init();
+#ifdef ENABLE_HOMEKIT
     led_init();
+#endif /* ENABLE_HOMEKIT */
 }
